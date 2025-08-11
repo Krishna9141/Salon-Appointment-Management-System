@@ -34,7 +34,7 @@ A full-stack web application for booking, managing, and tracking salon appointme
 > 📌 All screenshots are stored in the `assets/images/` folder.
 
 ### 🏠 Home Page  
-![Home Page](assets/images/home-page.png)
+![Home Page]("C:\Users\krish\Downloads\home-page.png")
 
 ### 💈 Services Section  
 ![Services](assets/images/services-section.png)
@@ -151,3 +151,4 @@ Feel free to submit issues or pull requests for improvements!
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE)
+
