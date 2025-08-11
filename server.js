@@ -1,181 +1,239 @@
-require('dotenv').config();
 const express = require('express');
-const Database = require('better-sqlite3');
-const nodemailer = require('nodemailer');
 const cors = require('cors');
-const path = require('path');
-const bodyParser = require('body-parser');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
+const Database = require('./database');
 
 const app = express();
-const port = 8000;
+const server = createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST"]
+  }
+});
 
+const PORT = process.env.PORT || 3001;
+const db = new Database();
+
+// Middleware
 app.use(cors());
-app.use(express.static(__dirname));
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.json());
 
-// SQLite DB setup using better-sqlite3
-const db = new Database('./salon.db');
-console.log('Connected to SQLite DB');
+// Emit queue updates to all connected clients
+const emitQueueUpdate = () => {
+  db.getQueue((err, queue) => {
+    if (err) return console.error('Error getting queue:', err);
+    
+    db.getCounters((err, counters) => {
+      if (err) return console.error('Error getting counters:', err);
+      
+      db.getStats((err, stats) => {
+        if (err) return console.error('Error getting stats:', err);
+        
+        io.emit('queueUpdate', {
+          queue: queue || [],
+          counters: counters || [],
+          stats
+        });
+      });
+    });
+  });
+};
 
-db.prepare(`
-    CREATE TABLE IF NOT EXISTS appointments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        email TEXT NOT NULL,
-        phone TEXT NOT NULL,
-        service TEXT NOT NULL,
-        date TEXT NOT NULL,
-        time TEXT NOT NULL,
-        status TEXT DEFAULT 'pending',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-`).run();
+// Routes
 
-// Nodemailer setup
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-    }
+// Get current queue status
+app.get('/api/queue', (req, res) => {
+  db.getQueue((err, queue) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    db.getCounters((err, counters) => {
+      if (err) return res.status(500).json({ error: err.message });
+      
+      db.getStats((err, stats) => {
+        if (err) return res.status(500).json({ error: err.message });
+        
+        res.json({
+          queue: queue || [],
+          counters: counters || [],
+          stats
+        });
+      });
+    });
+  });
 });
 
-transporter.verify((error, success) => {
-    if (error) {
-        console.error('Nodemailer error:', error);
+// Add new token to queue
+app.post('/api/queue/add', (req, res) => {
+  const { customerName, serviceType = 'General' } = req.body;
+  
+  if (!customerName) {
+    return res.status(400).json({
+      success: false,
+      message: 'Customer name is required'
+    });
+  }
+
+  db.addToken(customerName, serviceType, (err, token) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    emitQueueUpdate();
+    
+    res.json({
+      success: true,
+      token
+    });
+  });
+});
+
+// Call next person in queue
+app.post('/api/queue/next', (req, res) => {
+  const { counterId } = req.body;
+  
+  if (!counterId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Counter ID is required'
+    });
+  }
+
+  db.callNext(counterId, (err, token) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    if (!token) {
+      return res.json({
+        success: false,
+        message: 'Queue is empty'
+      });
+    }
+
+    emitQueueUpdate();
+    
+    res.json({
+      success: true,
+      token
+    });
+  });
+});
+
+// Complete service for a token
+app.post('/api/queue/complete', (req, res) => {
+  const { counterId } = req.body;
+  
+  if (!counterId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Counter ID is required'
+    });
+  }
+
+  db.completeService(counterId, (err, result) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    if (!result) {
+      return res.json({
+        success: false,
+        message: 'No active token for this counter'
+      });
+    }
+
+    emitQueueUpdate();
+    
+    res.json({
+      success: true,
+      message: 'Service completed successfully'
+    });
+  });
+});
+
+// Reset entire queue
+app.post('/api/queue/reset', (req, res) => {
+  db.resetQueue((err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    emitQueueUpdate();
+    
+    res.json({
+      success: true,
+      message: 'Queue reset successfully'
+    });
+  });
+});
+
+// Get token status by ID
+app.get('/api/token/:id', (req, res) => {
+  const { id } = req.params;
+  
+  db.getTokenById(id, (err, token) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    if (!token) {
+      return res.status(404).json({
+        success: false,
+        message: 'Token not found'
+      });
+    }
+
+    // Get position in queue if still waiting
+    if (token.status === 'waiting') {
+      db.getQueue((err, queue) => {
+        if (err) return res.status(500).json({ error: err.message });
+        
+        const position = queue.findIndex(t => t.id === id) + 1;
+        
+        res.json({
+          success: true,
+          token,
+          position
+        });
+      });
     } else {
-        console.log('Nodemailer is ready');
+      res.json({
+        success: true,
+        token,
+        position: null
+      });
     }
+  });
 });
 
-// Admin login route
-app.post('/admin-login', (req, res) => {
-    const { username, password } = req.body;
-    const adminUsername = process.env.ADMIN_USER || 'admin';
-    const adminPassword = process.env.ADMIN_PASS || 'admin123';
-
-    if (username === adminUsername && password === adminPassword) {
-        res.json({ success: true });
-    } else {
-        res.status(401).json({ success: false, message: 'Login failed. Please try again.' });
-    }
+// Toggle counter status
+app.post('/api/counters/:id/toggle', (req, res) => {
+  const { id } = req.params;
+  
+  db.toggleCounter(parseInt(id), (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    emitQueueUpdate();
+    
+    res.json({
+      success: true,
+      message: 'Counter status updated'
+    });
+  });
 });
 
-// Get all appointments
-app.get('/api/appointments', (req, res) => {
-    try {
-        const rows = db.prepare('SELECT * FROM appointments ORDER BY created_at DESC').all();
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+// Socket.io connection handling
+io.on('connection', (socket) => {
+  console.log('Client connected:', socket.id);
+  
+  // Send current queue status to newly connected client
+  emitQueueUpdate();
+
+  socket.on('disconnect', () => {
+    console.log('Client disconnected:', socket.id);
+  });
 });
 
-// Book appointment
-app.post('/api/book', (req, res) => {
-    const { name, email, phone, service, date, time } = req.body;
-
-    try {
-        const stmt = db.prepare(`INSERT INTO appointments (name, email, phone, service, date, time) VALUES (?, ?, ?, ?, ?, ?)`);
-        const result = stmt.run(name, email, phone, service, date, time);
-
-        const mailOptions = {
-            from: process.env.EMAIL_USER,
-            to: email,
-            subject: 'Your Salon Appointment is Booked',
-            html: `
-                <h2>Hello ${name},</h2>
-                <p>Your appointment for <strong>${service}</strong> is scheduled on <strong>${date}</strong> at <strong>${time}</strong>.</p>
-                <p>Status: <strong>Pending</strong></p>
-                <p>We’ll confirm shortly. Thank you!</p>
-                <br>
-                <p>– Purush Salon</p>
-            `
-        };
-
-        transporter.sendMail(mailOptions, (error, info) => {
-            if (error) console.error('Email Error:', error);
-            else console.log('Booking email sent:', info.response);
-        });
-
-        res.json({ success: true, id: result.lastInsertRowid });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+// Start server
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
 
-// Confirm appointment
-app.post('/api/confirm', (req, res) => {
-    const { id } = req.body;
-
-    try {
-        const row = db.prepare(`SELECT * FROM appointments WHERE id = ?`).get(id);
-        if (!row) return res.status(404).json({ success: false });
-
-        db.prepare(`UPDATE appointments SET status = 'confirmed' WHERE id = ?`).run(id);
-
-        const mailOptions = {
-            from: process.env.EMAIL_USER,
-            to: row.email,
-            subject: 'Your Appointment is Confirmed',
-            html: `
-                <h2>Hi ${row.name},</h2>
-                <p>Your appointment for <strong>${row.service}</strong> on <strong>${row.date}</strong> at <strong>${row.time}</strong> has been <strong>confirmed</strong>.</p>
-                <p>We look forward to seeing you!</p>
-                <br><p>– Purush Salon</p>
-            `
-        };
-
-        transporter.sendMail(mailOptions, (error, info) => {
-            if (error) console.error('Email Error:', error);
-            else console.log('Confirmation email sent:', info.response);
-        });
-
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ success: false });
-    }
-});
-
-// Reject appointment
-app.post('/api/reject', (req, res) => {
-    const { id } = req.body;
-
-    try {
-        const row = db.prepare(`SELECT * FROM appointments WHERE id = ?`).get(id);
-        if (!row) return res.status(404).json({ success: false });
-
-        db.prepare(`UPDATE appointments SET status = 'rejected' WHERE id = ?`).run(id);
-
-        const mailOptions = {
-            from: process.env.EMAIL_USER,
-            to: row.email,
-            subject: 'Your Appointment Was Rejected',
-            html: `
-                <h2>Hi ${row.name},</h2>
-                <p>We regret to inform you that your appointment for <strong>${row.service}</strong> on <strong>${row.date}</strong> at <strong>${row.time}</strong> was <strong>rejected</strong>.</p>
-                <p>Please try booking another time or contact us directly.</p>
-                <br><p>– Purush Salon</p>
-            `
-        };
-
-        transporter.sendMail(mailOptions, (error, info) => {
-            if (error) console.error('Email Error:', error);
-            else console.log('Rejection email sent:', info.response);
-        });
-
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ success: false });
-    }
-});
-
-// Fallback route
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-app.listen(port, () => {
-    console.log(`Server is running on http://localhost:${port}`);
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('Shutting down server...');
+  db.close();
+  process.exit(0);
 });
