@@ -29,33 +29,6 @@ A full-stack web application for booking, managing, and tracking salon appointme
 
 ---
 
-## 📸 Screenshots
-
-> 📌 All screenshots are stored in the `assets/images/` folder.
-
-### 🏠 Home Page  
-![Home Page]("C:\Users\krish\Downloads\home-page.png")
-
-### 💈 Services Section  
-![Services](assets/images/services-section.png)
-
-### 📅 Booking Form  
-![Booking Form](assets/images/booking-form.png)
-
-### 🔐 Admin Login  
-![Admin Login](assets/images/admin-login.png)
-
-### 📊 Admin Dashboard  
-![Admin Dashboard](assets/images/admin-dashboard.png)
-
-### 📧 Email - Booking Message  
-![Email Booking Message](assets/images/email-bookingmessage.png)
-
-### ✅ Email - Confirmation Message  
-![Email Confirmed](assets/images/email-confirmed.png)
-
----
-
 ## 🛠️ Getting Started
 
 ### 🔧 Prerequisites
@@ -151,4 +124,5 @@ Feel free to submit issues or pull requests for improvements!
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE)
+
 
